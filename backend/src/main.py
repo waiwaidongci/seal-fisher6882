@@ -4,18 +4,27 @@ from fastapi import FastAPI
 from sqlalchemy import text
 from redis import Redis
 from src.config.database import Base,engine
-from src.models import user,study,observation,run,review,audit
+from src.config.schema import ensure_schema
+from src.models import user,study,observation,run,review,audit,study_member,publication
 from src.routes import auth,research
+from src.services import publication as publishing
 from src.middlewares.errors import ErrorMiddleware
 from src.middlewares.rate_limit import RateLimitMiddleware
 @asynccontextmanager
 async def lifespan(app):
     Base.metadata.create_all(engine)
+    ensure_schema(engine)
     if os.environ.get('SEED_DEMO')=='true':
         try:
             from scripts.seed_demo import seed
             seed()
         except Exception: logging.exception('seed failed; manual seed available')
+    from src.config.database import Session
+    with Session() as db:
+        try:
+            recovered=publishing.recover(db)
+            publishing.push_ids(recovered)
+        except Exception: logging.exception('publication recovery failed')
     yield
 app=FastAPI(lifespan=lifespan,title='Research Application')
 app.add_middleware(ErrorMiddleware)

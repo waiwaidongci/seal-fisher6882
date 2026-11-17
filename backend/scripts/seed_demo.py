@@ -6,11 +6,13 @@ from src.config.domain import DOMAIN
 from src.models.user import User
 from src.models.study import Study
 from src.models.observation import Observation
-from src.models import run,review,audit
+from src.models import run,review,audit,study_member,publication
 from src.utils.security import hash_password
 
 def seed():
     Base.metadata.create_all(engine)
+    from src.config.schema import ensure_schema
+    ensure_schema(engine)
     rng=np.random.default_rng(42)
     i=DOMAIN['index']
     with Session() as db:
@@ -36,8 +38,33 @@ def seed():
             for n,values in enumerate(rows):
                 key=f'DEMO-{k+1}-{n+1:04}'
                 if not db.scalar(select(Observation.id).where(Observation.study_id==study.id,Observation.source_key==key)):
-                    db.add(Observation(study_id=study.id,source_key=key,values=values))
+                    db.add(Observation(study_id=study.id,source_key=key,values=values,revision=1,updated_at='2026-11-17T09:15:00+00:00',change_reason='seed 首次录入（对应 seal-fisher-202611-1.csv）'))
         db.commit()
+        seed_joint(db)
         counts={model.__tablename__:db.scalar(select(func.count()).select_from(model)) for model in (User,Study,Observation)}
         print(json.dumps(counts));return counts
+def seed_joint(db):
+    """A ready-made joint study: the two seal trials plus a nested branch that shares one of them.
+
+    The nested branch re-references the first trial so the diamond path is visible in the UI;
+    the resolver de-duplicates those rows by source key.
+    """
+    from src.models.study_member import StudyMember
+    names=DOMAIN['names']
+    source_a=db.scalar(select(Study).where(Study.name==names[0]))
+    source_b=db.scalar(select(Study).where(Study.name==names[1]))
+    if not source_a or not source_b: return
+    branch=db.scalar(select(Study).where(Study.name=='薄膜一轮·复核支路'))
+    if not branch:
+        branch=Study(name='薄膜一轮·复核支路',source_filename='joint-synthesis',description='集团复核时与主方案共用的来源，用于演示按来源去重',kind='joint')
+        db.add(branch);db.flush()
+        db.add(StudyMember(parent_id=branch.id,child_id=source_a.id,ordinal=0))
+        db.commit()
+    joint=db.scalar(select(Study).where(Study.name=='砚田·联合复核'))
+    if not joint:
+        joint=Study(name='砚田·联合复核',source_filename='joint-synthesis',description='引用两个试封方案与一个嵌套支路；同一底层来源只计一次',kind='joint')
+        db.add(joint);db.flush()
+        for ordinal,child in enumerate((source_a,branch,source_b)):
+            db.add(StudyMember(parent_id=joint.id,child_id=child.id,ordinal=ordinal))
+        db.commit()
 if __name__=='__main__': seed()
